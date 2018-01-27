@@ -8,6 +8,8 @@ Ext.define('CustomApp', {
 	THEME_COLOR: '#821100',
 	fromDate: null,
 	toDate: null,
+	dateLookup: {},
+	workItemsLookup: {},
 	
 	launch: function() {
 		app = this;
@@ -118,25 +120,23 @@ Ext.define('CustomApp', {
 		this.fromDate = fromDate;
 		this.toDate = toDate;
 		
-		this.fetchWorkItems( fromDate );
-	},
-	
-	fetchWorkItems:function( date ){
 		// Show loading message
 		app._myMask = new Ext.LoadMask(Ext.getBody(), {msg:"Calculating... Please wait."});
 		app._myMask.show();
-		
-		console.log( this.getContext().getDataContext() );
-		console.log( this.getContext().getProject() );
-		console.log( date.toISOString() );
-		
+		this.fetchWorkItems( toDate );
+	},
+	
+	fetchWorkItems:function( date ){
+		console.log( 'Fetching data for ' + date );
 		Ext.create( 'Rally.data.lookback.SnapshotStore', {
 			fetch: [
 				'Name',
 				'ScheduleState',
 				'PlanEstimate',
 				'FormattedID',
-				'Project'
+				'Project',
+				'InProgressDate',
+				'AcceptedDate'
 			],
 			autoLoad: true,
 			listeners: {
@@ -156,8 +156,43 @@ Ext.define('CustomApp', {
 	},
 	
 	onDateLoaded: function( store, records ) {
-		console.log( store );
-		console.log( records );
+		var date = new Date( store.findConfig.__At );
+		app.dateLookup[ date ] = {};
+				
+		_.each( records, function( record ) {
+			if( app.workItemsLookup[ record.data.FormattedID ] === undefined ) {
+				var recordLookup = {};
+				recordLookup.id = record.data.FormattedID;
+				recordLookup.name = record.data.Name;
+				recordLookup.planEstimate = record.data.PlanEstimate;
+				recordLookup.cycleTime = app.countWeekDays( record.data.InProgressDate, record.data.AcceptedDate );
+				// TODO: How should we track things that are not yet accepted?
+				if ( recordLookup.cycleTime > 0 ) {
+					recordLookup.poinsPerDay = recordLookup.planEstimate / recordeLookup.cycleTime;
+				} else {
+					recordLookup.poinsPerDay = 0;
+				}
+				app.workItemsLookup[ recordLookup.id ] = recordLookup;
+			}
+		});
+		
+		// Consider whether a workitem finished partway through a day, such that WIP doesn't double count
+		app.dateLookup[ date ].wip = records.length;
+		app.dateLookup[ date ].points = 0;
+		_.each( records, function( record ) {
+			app.dateLookup[ date ].points += app.workItemsLookup[ record.data.FormattedID ].pointsPerDay;
+		});
+				
+		if ( date > app.fromDate ) {
+			do {
+				date.setDate( date.getDate() - 1 )
+			} while ( !app.isWeekday( date ) );
+			app.fetchWorkItems( date );
+		} else {
+			this._myMask.hide();
+			console.log( app.dateLookup );
+			console.log( app.workItemsLookup );
+		}
 	},
 		
 	countWeekDays:function( dDate1, dDate2 ) {
@@ -168,11 +203,15 @@ Ext.define('CustomApp', {
 			dateItr.setHours( dateItr.getHours() + 6 );
 			// if the new day is a weekend, don't count it
 			// TODO: be locale aware and DST aware
-			if( ( dateItr.getDay() != 6 ) && ( dateItr.getDay() !== 0 ) ) {
+			if( app.isWeekday( dateItr ) ) {
 				days = days + 0.25;
 			} 
 		}
 		return days;
+	},
+	
+	isWeekday:function( date ) {
+		return ( ( date.getDay() != 6 ) && ( date.getDay() !== 0 ) );
 	},
 	
 	showMessage:function( text ){
